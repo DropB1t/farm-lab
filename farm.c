@@ -17,9 +17,13 @@
 #define _GNU_SOURCE
 
 #include <assert.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <strings.h>
+#include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -33,6 +37,12 @@
 #define N_THREADS 4L
 #define Q_LEN 8L
 #define DELAY 0L
+
+typedef struct f_struct
+{
+    char *filename;
+	size_t filesize;
+} f_struct_t;
 
 /*----- Funzioni -----*/
 
@@ -48,6 +58,7 @@ void format_cmd(const char *progname)
 	fprintf(stderr, "-n\n    numero di thread (default 4)\n");
 	fprintf(stderr, "-q\n    lunghezza delal coda concorrente (default 8)\n");
 	fprintf(stderr, "-t\n    tempo in ms tra l'invio delle richieste ai thread Worker (default 0)\n");
+	fflush(stdout);
 }
 
 /**
@@ -56,18 +67,41 @@ void format_cmd(const char *progname)
  * @param	val valore da controllare
  * @param	var variabile a cui viene assegnato il valore se passa il controllo
  */
-void check_param(char *val, long *var)
+static void check_param(char *val, long *var)
 {
 	int r = isNumber(val, var);
 	if (r == 1)
 	{
 		fprintf(stderr, "%s è NaN\n", val);
+		fflush(stdout);
 		exit(1);
 	}
 	else if (r == 2)
 	{
 		fprintf(stderr, "%s ha provocato un overflow/underflow\n", val);
+		fflush(stdout);
 		exit(2);
+	}
+}
+
+/**
+ * @brief	Fa il test sull'espressione 'test' passata come parametro per determinare se è verificato un errore
+ *
+ * @param	test condizione che verifica l'errore
+ * @param	message messaggio sa stampare nel caso dell'errore
+ * @param	__VA_ARGS__
+ */
+static void
+check(int test, const char *message, ...)
+{
+	if (test)
+	{
+		va_list args;
+		va_start(args, message);
+		vfprintf(stderr, message, args);
+		va_end(args);
+		fprintf(stderr, "\n");
+		exit(EXIT_FAILURE);
 	}
 }
 
@@ -147,11 +181,15 @@ int main(int argc, char *argv[])
 		Collector();
 		exit(EXIT_SUCCESS);
 	}
+	/*----- MASTER WORKER -----*/
+
+
 
 	collector_exit_status(collector_pid);
 	return 0;
 }
 
+/*----- COLLECTOR -----*/
 void Collector()
 {
 	printf("Collector is up\n");
