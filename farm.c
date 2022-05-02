@@ -33,6 +33,7 @@
 #include "boundedqueue.h"
 
 /*----- DEFINES -----*/
+#define EOS (void *)0x1
 #define NAME_MAX 256
 #define N_THREADS 4L
 #define Q_LEN 8L
@@ -40,7 +41,7 @@
 
 typedef struct f_struct
 {
-    char *filename;
+	char *filename;
 	size_t filesize;
 } f_struct_t;
 
@@ -51,7 +52,8 @@ typedef struct f_struct
  *
  * @param    progname nome del programma
  */
-void format_cmd(const char *progname)
+static void
+format_cmd(const char *progname)
 {
 	fprintf(stderr, "Il programma va lanciato con il seguente comando:\n");
 	fprintf(stderr, "\n\t./%s [OPTION]... [FILES LIST]...\n\n", progname);
@@ -67,7 +69,8 @@ void format_cmd(const char *progname)
  * @param	val valore da controllare
  * @param	var variabile a cui viene assegnato il valore se passa il controllo
  */
-static void check_param(char *val, long *var)
+static void
+check_param(char *val, long *var)
 {
 	int r = isNumber(val, var);
 	if (r == 1)
@@ -108,14 +111,15 @@ check(int test, const char *message, ...)
 /**
  * @brief	Il corpo del processo Collector
  */
-void Collector();
+static void Collector();
 
 /**
  * @brief	Aspetta la terminazione del processo collector e stampa lo status con cui termina il processo
  *
  * @param	pid ID del processo collector
  */
-void collector_exit_status(pid_t pid)
+static void
+collector_exit_status(pid_t pid)
 {
 	int status;
 	if (waitpid(pid, &status, 0) == -1)
@@ -126,14 +130,41 @@ void collector_exit_status(pid_t pid)
 
 	if (WIFEXITED(status))
 	{
-		fprintf(stdout, "Processo collector [pid=%d] è terminato con exit(%d)\n", pid, WEXITSTATUS(status));
+		DBG("Processo collector [pid=%d] è terminato con exit(%d)\n", pid, WEXITSTATUS(status));
 	}
 	else
 	{
-		fprintf(stdout, "Processo collector [pid=%d] è terminato con un exit irregolare\n", pid);
+		DBG("Processo collector [pid=%d] è terminato con un exit irregolare\n", pid);
 	}
 	fflush(stdout);
 }
+
+/**
+ * @brief	Start routine dei thread Worker
+ */
+static void *Worker(void *arg);
+
+/**
+ * @brief	Routine per liberare la memoria di elementi f_struct
+ */
+void F(void *el)
+{
+	if (el != EOS)
+	{
+		f_struct_t *f = el;
+		free(f->filename);
+		free(f);
+	}
+}
+
+/**
+ * @brief	Mappa un file di interi long
+ *
+ * @param	file_name nome del file
+ * @param	contents_ptr puntatore che punta alla locazione di memoria mappata
+ * @param	size dimensione della memoria in byte da mappare
+ */
+void mmap_file(const char *file_name, long **contents_ptr, size_t size);
 
 /*----- MAIN -----*/
 int main(int argc, char *argv[])
@@ -183,15 +214,104 @@ int main(int argc, char *argv[])
 	}
 	/*----- MASTER WORKER -----*/
 
+	BQueue_t *q = initBQueue(q_len);
 
+	pthread_t th[n];
+	for (size_t i = 0; i < n; i++)
+	{
+		int r = pthread_create(&th[i], NULL, Worker, q);
+		check(r != 0, "pthread_create ha fallito (Worker n.%ld)", i, strerror(r));
+	}
 
+	/*----- TEST DEI FILE -----*/
+
+	for (size_t i = optind; i < argc; i++)
+	{
+		size_t filesize;
+		errno = 0;
+		if (isRegular(argv[i], &filesize) != 1)
+		{
+			if (errno == 0)
+			{
+				fprintf(stderr, "%s non e' un file regolare\n", argv[i]);
+				continue;
+			}
+			perror("isRegular");
+			continue;
+		}
+		f_struct_t *file = malloc(sizeof(f_struct_t));
+		file->filename = strdup(argv[i]);
+		file->filesize = filesize;
+
+		usleep(delay * 1000);
+		push(q, file);
+	}
+	push(q, EOS);
+
+	for (size_t i = 0; i < n; i++)
+	{
+		int r = pthread_join(th[i], NULL);
+		check(r != 0, "pthread_join ha fallito (Worker n.%ld)\n", i, strerror(r));
+	}
+
+	deleteBQueue(q, NULL);
 	collector_exit_status(collector_pid);
 	return 0;
 }
 
 /*----- COLLECTOR -----*/
-void Collector()
+static void
+Collector()
 {
-	printf("Collector is up\n");
-	sleep(2);
+	DBG("Collector is up\n", NULL);
+}
+
+static void *Worker(void *arg)
+{
+	BQueue_t *q = arg;
+	// DBG("Start della routine del Worker\n", NULL);
+	while (1)
+	{
+		f_struct_t *f = NULL;
+		f = pop(q);
+		if (f == EOS)
+		{
+			break;
+		}
+		DBG("File ricevuto: %s con dimensione di %ld bytes\n", f->filename, f->filesize);
+
+		/*----- Calcolo di result -----*/
+
+		long *content = NULL;
+		mmap_file(f->filename, &content, f->filesize);
+
+		long result = 0;
+		for (size_t i = 0; i < f->filesize / 8; i++)
+		{
+			result += (i * content[i]);
+		}
+
+		int len = snprintf(NULL, 0, "%ld\t%s", result, f->filename);
+		char res[(len+1)];
+		snprintf(res, (len+1), "%ld\t%s", result, f->filename);
+		printf("%s\n", res);
+
+		munmap(content, f->filesize);
+		free(f->filename);
+		free(f);
+	}
+	// DBG("Chiusura del Worker\n", NULL);
+	push(q, EOS);
+
+	return NULL;
+}
+
+void mmap_file(const char *file_name, long **content_ptr, size_t size)
+{
+	int fd;
+	fd = open(file_name, O_RDONLY);
+	check(fd < 0, "Funzione open %s ha fallito: %s", file_name, strerror(errno));
+	*content_ptr = mmap(0, size, PROT_READ, MAP_PRIVATE, fd, 0);
+	check(*content_ptr == MAP_FAILED, "Funzione mmap %s ha fallito: %s", file_name, strerror(errno));
+	close(fd);
 }

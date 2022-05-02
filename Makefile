@@ -54,8 +54,8 @@ libfarm.a: $(OBJECTS)
 generafile: generafile.o
 	$(CC) $(CFLAGS) $(INCLUDES) $(OPTFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS)
 
-clean		: 
-	rm -f $(TARGETS)
+clean		:
+	@rm -f $(TARGETS)
 
 cleanall	: clean
 	@rm -f *.o *~ libfarm.a
