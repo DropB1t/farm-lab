@@ -19,6 +19,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <semaphore.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,6 +50,13 @@ typedef struct f_struct
 	char *filename;
 	size_t filesize;
 } f_struct_t;
+
+typedef struct th_struct
+{
+	int fd_skt;
+	sem_t sem;
+	BQueue_t *q;
+} th_struct_t;
 
 /*----- Funzioni -----*/
 
@@ -236,24 +244,36 @@ int main(int argc, char *argv[])
 			exit(EXIT_FAILURE);
 	}
 
-	int N = 100;
-	char buf[N];
-
-	write(fd_skt,"Hallo !", 7);
-	read(fd_skt, buf, N);
-	printf("Client got : %s\n", buf);
+	//int N = 100;
+	//char buf[N];
+	write(fd_skt, "Hallo !", 7);
+	//read(fd_skt, buf, N);
+	//printf("Client got : %s\n", buf);
 	close(fd_skt);
 
 	/*----- MASTER WORKER -----*/
 
+	th_struct_t *th_struct = malloc(sizeof(th_struct_t));
+	assert(th_struct);
+
+	th_struct->fd_skt = fd_skt;
+
+	errno = 0;
+	int r = sem_init(&th_struct->sem, 1, 0);
+	check(r == -1, "sem_init ha fallito: %s", strerror(errno));
+
+	errno = 0;
 	BQueue_t *q = initBQueue(q_len);
+	check(q == NULL, "initBQueue ha fallito: %s", strerror(errno));
 
 	pthread_t th[n];
 	for (size_t i = 0; i < n; i++)
 	{
-		int r = pthread_create(&th[i], NULL, Worker, q);
+		int r = pthread_create(&th[i], NULL, Worker, th_struct);
 		check(r != 0, "pthread_create ha fallito (Worker n.%ld)", i, strerror(r));
 	}
+
+	V(&th_struct->sem);
 
 	/*----- TEST DEI FILE -----*/
 
@@ -310,11 +330,21 @@ Collector(int fd_skt, int fd_c, struct sockaddr_un sa)
 	fd_c = accept(fd_skt, NULL, 0);
 	// Fare check sul accept (errno)
 
-	int N = 100;
+	int N = 1024;
 	char buf[N];
-	read(fd_c, buf, N);
-	printf("Server got : %s\n", buf);
-	write(fd_c, "Bye !", 5);
+
+	while (1)
+	{
+		errno = 0;
+		int r = read(fd_c, buf, N);
+		check(r == -1, "Funzione read dal socket nel Collector ha fallito:%s", strerror(errno));
+		if(r == 0){
+			break;
+		}
+		fprintf(stdout, "%s\n", buf);
+		fflush(stdout);
+	}
+
 	close(fd_skt);
 	close(fd_c);
 	exit(EXIT_SUCCESS);
@@ -322,12 +352,12 @@ Collector(int fd_skt, int fd_c, struct sockaddr_un sa)
 
 static void *Worker(void *arg)
 {
-	BQueue_t *q = arg;
+	th_struct_t *th_struct = arg;
 	// DBG("Start della routine del Worker\n", NULL);
 	while (1)
 	{
 		f_struct_t *f = NULL;
-		f = pop(q);
+		f = pop(th_struct->q);
 		if (f == EOS)
 		{
 			break;
@@ -345,17 +375,21 @@ static void *Worker(void *arg)
 			result += (i * content[i]);
 		}
 
-		int len = snprintf(NULL, 0, "%ld\t%s", result, f->filename);
-		char res[(len + 1)];
-		snprintf(res, (len + 1), "%ld\t%s", result, f->filename);
+		int len = (snprintf(NULL, 0, "%ld\t%s", result, f->filename)) + 1;
+		char res[len];
+		snprintf(res, len, "%ld\t%s", result, f->filename);
+
+		//P(&th_struct->sem);
 		printf("%s\n", res);
+		//write(th_struct->fd_skt, res, len);
+		//V(&th_struct->sem);
 
 		munmap(content, f->filesize);
 		free(f->filename);
 		free(f);
 	}
 	// DBG("Chiusura del Worker\n", NULL);
-	push(q, EOS);
+	push(th_struct->q, EOS);
 	pthread_exit(NULL);
 }
 
