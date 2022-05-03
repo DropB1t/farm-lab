@@ -41,9 +41,10 @@
 #define N_THREADS 4L
 #define Q_LEN 8L
 #define DELAY 0L
+#define RECONNECT 50000
 
 #define UNIX_PATH_MAX 108
-#define SOCKNAME "./sck_yr "
+#define SOCKNAME "./sck_y"
 
 typedef struct f_struct
 {
@@ -124,7 +125,7 @@ check(int test, const char *message, ...)
 /**
  * @brief	Il corpo del processo Collector
  */
-static void Collector(int fd_skt, int fd_c, struct sockaddr_un sa);
+static void Collector(struct sockaddr_un sa);
 
 /**
  * @brief	Aspetta la terminazione del processo collector e stampa lo status con cui termina il processo
@@ -221,7 +222,7 @@ int main(int argc, char *argv[])
 
 	/*----- SOCKET SETUP -----*/
 
-	int fd_skt, fd_c;
+	int fd_skt;
 	struct sockaddr_un sa;
 	strncpy(sa.sun_path, SOCKNAME, UNIX_PATH_MAX);
 	sa.sun_family = AF_UNIX;
@@ -229,7 +230,7 @@ int main(int argc, char *argv[])
 	pid_t collector_pid = fork();
 	if (collector_pid == 0)
 	{
-		Collector(fd_skt, fd_c, sa);
+		Collector(sa);
 		exit(EXIT_SUCCESS);
 	}
 
@@ -239,17 +240,10 @@ int main(int argc, char *argv[])
 	while (connect(fd_skt, (struct sockaddr *)&sa, sizeof(sa)) == -1)
 	{
 		if (errno == ENOENT)
-			sleep(1);
+			usleep(RECONNECT); // Aspetta 50ms per riprovare la connessione
 		else
 			exit(EXIT_FAILURE);
 	}
-
-	//int N = 100;
-	//char buf[N];
-	write(fd_skt, "Hallo !", 7);
-	//read(fd_skt, buf, N);
-	//printf("Client got : %s\n", buf);
-	close(fd_skt);
 
 	/*----- MASTER WORKER -----*/
 
@@ -259,12 +253,13 @@ int main(int argc, char *argv[])
 	th_struct->fd_skt = fd_skt;
 
 	errno = 0;
-	int r = sem_init(&th_struct->sem, 1, 0);
+	int r = sem_init(&th_struct->sem, 1, 1);
 	check(r == -1, "sem_init ha fallito: %s", strerror(errno));
 
 	errno = 0;
 	BQueue_t *q = initBQueue(q_len);
 	check(q == NULL, "initBQueue ha fallito: %s", strerror(errno));
+	th_struct->q = q;
 
 	pthread_t th[n];
 	for (size_t i = 0; i < n; i++)
@@ -273,7 +268,7 @@ int main(int argc, char *argv[])
 		check(r != 0, "pthread_create ha fallito (Worker n.%ld)", i, strerror(r));
 	}
 
-	V(&th_struct->sem);
+	//V(&th_struct->sem);
 
 	/*----- TEST DEI FILE -----*/
 
@@ -306,15 +301,20 @@ int main(int argc, char *argv[])
 		check(r != 0, "pthread_join ha fallito (Worker n.%ld)\n", i, strerror(r));
 	}
 
-	deleteBQueue(q, NULL);
+	deleteBQueue(th_struct->q, NULL);
+	sem_destroy(&th_struct->sem);
+	close(th_struct->fd_skt);
+	free(th_struct);
 	collector_exit_status(collector_pid);
+	unlink(SOCKNAME);
 	return 0;
 }
 
 /*----- COLLECTOR -----*/
 static void
-Collector(int fd_skt, int fd_c, struct sockaddr_un sa)
+Collector(struct sockaddr_un sa)
 {
+	int fd_skt, fd_c;
 	DBG("Collector is up\n", NULL);
 
 	/*----- SERVER SETUP -----*/
@@ -338,7 +338,8 @@ Collector(int fd_skt, int fd_c, struct sockaddr_un sa)
 		errno = 0;
 		int r = read(fd_c, buf, N);
 		check(r == -1, "Funzione read dal socket nel Collector ha fallito:%s", strerror(errno));
-		if(r == 0){
+		if (r == 0)
+		{
 			break;
 		}
 		fprintf(stdout, "%s\n", buf);
@@ -347,13 +348,13 @@ Collector(int fd_skt, int fd_c, struct sockaddr_un sa)
 
 	close(fd_skt);
 	close(fd_c);
-	exit(EXIT_SUCCESS);
+	unlink(sa.sun_path);
 }
 
 static void *Worker(void *arg)
 {
 	th_struct_t *th_struct = arg;
-	// DBG("Start della routine del Worker\n", NULL);
+	DBG("Start della routine del Worker\n", NULL);
 	while (1)
 	{
 		f_struct_t *f = NULL;
@@ -375,14 +376,16 @@ static void *Worker(void *arg)
 			result += (i * content[i]);
 		}
 
-		int len = (snprintf(NULL, 0, "%ld\t%s", result, f->filename)) + 1;
+		int len = (snprintf(NULL, 0, "%ld %s", result, f->filename)) + 1;
 		char res[len];
-		snprintf(res, len, "%ld\t%s", result, f->filename);
+		snprintf(res, len, "%ld %s", result, f->filename);
 
-		//P(&th_struct->sem);
-		printf("%s\n", res);
-		//write(th_struct->fd_skt, res, len);
-		//V(&th_struct->sem);
+		P(&th_struct->sem);
+		errno = 0;
+		int r = write(th_struct->fd_skt, res, len);
+		check(r == -1, "Funzione write nel Worker ha fallito:%s", strerror(errno));
+		V(&th_struct->sem);
+		//printf("%s\n", res);
 
 		munmap(content, f->filesize);
 		free(f->filename);
