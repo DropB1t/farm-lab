@@ -25,7 +25,9 @@
 #include <strings.h>
 #include <sys/mman.h>
 #include <sys/types.h>
+#include <sys/socket.h>
 #include <sys/wait.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 /*----- Includes Personali -----*/
@@ -38,6 +40,9 @@
 #define N_THREADS 4L
 #define Q_LEN 8L
 #define DELAY 0L
+
+#define UNIX_PATH_MAX 108
+#define SOCKNAME "./sck_yr "
 
 typedef struct f_struct
 {
@@ -111,7 +116,7 @@ check(int test, const char *message, ...)
 /**
  * @brief	Il corpo del processo Collector
  */
-static void Collector();
+static void Collector(int fd_skt, int fd_c, struct sockaddr_un sa);
 
 /**
  * @brief	Aspetta la terminazione del processo collector e stampa lo status con cui termina il processo
@@ -206,12 +211,39 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	/*----- SOCKET SETUP -----*/
+
+	int fd_skt, fd_c;
+	struct sockaddr_un sa;
+	strncpy(sa.sun_path, SOCKNAME, UNIX_PATH_MAX);
+	sa.sun_family = AF_UNIX;
+
 	pid_t collector_pid = fork();
 	if (collector_pid == 0)
 	{
-		Collector();
+		Collector(fd_skt, fd_c, sa);
 		exit(EXIT_SUCCESS);
 	}
+
+	/*----- CLIENT SETUP -----*/
+
+	fd_skt = socket(AF_UNIX, SOCK_STREAM, 0);
+	while (connect(fd_skt, (struct sockaddr *)&sa, sizeof(sa)) == -1)
+	{
+		if (errno == ENOENT)
+			sleep(1);
+		else
+			exit(EXIT_FAILURE);
+	}
+
+	int N = 100;
+	char buf[N];
+
+	write(fd_skt,"Hallo !", 7);
+	read(fd_skt, buf, N);
+	printf("Client got : %s\n", buf);
+	close(fd_skt);
+
 	/*----- MASTER WORKER -----*/
 
 	BQueue_t *q = initBQueue(q_len);
@@ -261,9 +293,31 @@ int main(int argc, char *argv[])
 
 /*----- COLLECTOR -----*/
 static void
-Collector()
+Collector(int fd_skt, int fd_c, struct sockaddr_un sa)
 {
 	DBG("Collector is up\n", NULL);
+
+	/*----- SERVER SETUP -----*/
+	fd_skt = socket(AF_UNIX, SOCK_STREAM, 0);
+	// Fare check di apertura socket (errno)
+
+	bind(fd_skt, (struct sockaddr *)&sa, sizeof(sa));
+	// Fare check sul bind (errno)
+
+	listen(fd_skt, SOMAXCONN);
+	// Fare check sul return del listen (errno)
+
+	fd_c = accept(fd_skt, NULL, 0);
+	// Fare check sul accept (errno)
+
+	int N = 100;
+	char buf[N];
+	read(fd_c, buf, N);
+	printf("Server got : %s\n", buf);
+	write(fd_c, "Bye !", 5);
+	close(fd_skt);
+	close(fd_c);
+	exit(EXIT_SUCCESS);
 }
 
 static void *Worker(void *arg)
@@ -292,8 +346,8 @@ static void *Worker(void *arg)
 		}
 
 		int len = snprintf(NULL, 0, "%ld\t%s", result, f->filename);
-		char res[(len+1)];
-		snprintf(res, (len+1), "%ld\t%s", result, f->filename);
+		char res[(len + 1)];
+		snprintf(res, (len + 1), "%ld\t%s", result, f->filename);
 		printf("%s\n", res);
 
 		munmap(content, f->filesize);
@@ -302,8 +356,7 @@ static void *Worker(void *arg)
 	}
 	// DBG("Chiusura del Worker\n", NULL);
 	push(q, EOS);
-
-	return NULL;
+	pthread_exit(NULL);
 }
 
 void mmap_file(const char *file_name, long **content_ptr, size_t size)
