@@ -45,6 +45,7 @@ all		: $(TARGETS)
 
 farm: farm.o libfarm.a $(INCLUDE_FILES)
 	$(CC) $(CFLAGS) $(INCLUDES) $(OPTFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS)
+	@make cleanobj
 
 libfarm.a: $(OBJECTS)
 	$(AR) $(ARFLAGS) $@ $^
@@ -59,6 +60,9 @@ clean		:
 
 cleanall	: clean
 	@rm -f *.o *~ libfarm.a
+
+cleanobj	:
+	@rm -f *.o libfarm.a
 
 zip			:
 	tar -czvf $(TARNAME).tar.gz $(FILES_TO_ARCHIVE)

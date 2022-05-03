@@ -342,8 +342,8 @@ Collector(struct sockaddr_un sa)
 		{
 			break;
 		}
-		fprintf(stdout, "%s\n", buf);
-		fflush(stdout);
+		printf("%s\n", buf);
+		//fflush(stdout);
 	}
 
 	close(fd_skt);
