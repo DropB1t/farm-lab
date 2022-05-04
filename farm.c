@@ -20,6 +20,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <semaphore.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -58,6 +59,8 @@ typedef struct th_struct
 	sem_t sem;
 	BQueue_t *q;
 } th_struct_t;
+
+volatile sig_atomic_t sig_term = 0;
 
 /*----- Funzioni -----*/
 
@@ -124,6 +127,8 @@ check(int test, const char *message, ...)
 
 /**
  * @brief	Il corpo del processo Collector
+ *
+ * @param	sa indirizzo della connessione socket AF_UNIX
  */
 static void Collector(struct sockaddr_un sa);
 
@@ -180,6 +185,48 @@ void F(void *el)
  */
 void mmap_file(const char *file_name, long **contents_ptr, size_t size);
 
+/*----- GESTORE DEI SEGNALI -----*/
+/**
+ * @function signal_handler
+ * @brief    gestisce i segnali ricevuti dal server, usata dal thread
+ *           gestore dei segnali
+ *
+ * Si mette in attesa finchè non arrivano alcuni segnali e all' arrivo
+ * esegue l' azione prevista
+ */
+void *Signal_Handler(void *arg)
+{
+
+	sigset_t *sigptr = (sigset_t *)arg;
+	sigset_t sigset = *sigptr;
+
+	int n;
+	int signal;
+	while (sig_term == 0)
+	{
+		n = sigwait(&sigset, &signal);
+
+		if (n != 0)
+		{
+			errno = n;
+			perror("nella sigwait");
+			exit(EXIT_FAILURE);
+		}
+
+		if ((signal == SIGINT) || (signal == SIGQUIT) || (signal == SIGTERM) || (signal == SIGHUP))
+		{
+			sig_term = 1;
+		}
+
+		if (signal == SIGUSR1)
+		{
+			break;
+		}
+	}
+
+	pthread_exit(NULL);
+}
+
 /*----- MAIN -----*/
 int main(int argc, char *argv[])
 {
@@ -220,6 +267,44 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	int err;
+	/*----- SIGNALS SETUP -----*/
+	struct sigaction s;
+	memset(&s, 0, sizeof(s));
+	s.sa_handler = SIG_IGN;
+
+	errno = 0;
+	err = sigaction(SIGPIPE, &s, NULL);
+	check(err == -1, "Errore nell'ignorare sengale SIGPIPE: %s", strerror(errno));
+
+	sigset_t set;
+	pthread_t sig_handler;
+
+	errno = 0;
+	err = sigemptyset(&set);
+	check(err == -1, "Funzione sigemptyset ha fallito: %s", strerror(errno));
+	errno = 0;
+	err = sigaddset(&set, SIGINT);
+	check(err == -1, "Funzione sigaddset ha fallito: %s", strerror(errno));
+	errno = 0;
+	err = sigaddset(&set, SIGQUIT);
+	check(err == -1, "Funzione sigaddset ha fallito: %s", strerror(errno));
+	errno = 0;
+	err = sigaddset(&set, SIGTERM);
+	check(err == -1, "Funzione sigaddset ha fallito: %s", strerror(errno));
+	errno = 0;
+	err = sigaddset(&set, SIGHUP);
+	check(err == -1, "Funzione sigaddset ha fallito: %s", strerror(errno));
+	errno = 0;
+	err = sigaddset(&set, SIGUSR1);
+	check(err == -1, "Funzione sigaddset ha fallito: %s", strerror(errno));
+
+	err = pthread_sigmask(SIG_SETMASK, &set, NULL);
+	check(err != 0, "Funzione pthread_sigmask ha fallito: %s", strerror(err));
+
+	err = pthread_create(&sig_handler, NULL, Signal_Handler, &set);
+	check(err != 0, "pthread_create sig_handler ha fallito: %s", strerror(err));
+
 	/*----- SOCKET SETUP -----*/
 
 	int fd_skt;
@@ -253,8 +338,8 @@ int main(int argc, char *argv[])
 	th_struct->fd_skt = fd_skt;
 
 	errno = 0;
-	int r = sem_init(&th_struct->sem, 1, 1);
-	check(r == -1, "sem_init ha fallito: %s", strerror(errno));
+	err = sem_init(&th_struct->sem, 1, 1);
+	check(err == -1, "sem_init ha fallito: %s", strerror(errno));
 
 	errno = 0;
 	BQueue_t *q = initBQueue(q_len);
@@ -264,15 +349,13 @@ int main(int argc, char *argv[])
 	pthread_t th[n];
 	for (size_t i = 0; i < n; i++)
 	{
-		int r = pthread_create(&th[i], NULL, Worker, th_struct);
-		check(r != 0, "pthread_create ha fallito (Worker n.%ld)", i, strerror(r));
+		err = pthread_create(&th[i], NULL, Worker, th_struct);
+		check(err != 0, "pthread_create ha fallito (Worker n.%ld): %s", i, strerror(err));
 	}
-
-	//V(&th_struct->sem);
 
 	/*----- TEST DEI FILE -----*/
 
-	for (size_t i = optind; i < argc; i++)
+	for (size_t i = optind; i < argc && sig_term != 1; i++)
 	{
 		size_t filesize;
 		errno = 0;
@@ -295,18 +378,37 @@ int main(int argc, char *argv[])
 	}
 	push(q, EOS);
 
-	for (size_t i = 0; i < n; i++)
+	if (sig_term == 1)
 	{
-		int r = pthread_join(th[i], NULL);
-		check(r != 0, "pthread_join ha fallito (Worker n.%ld)\n", i, strerror(r));
+		err = pthread_join(sig_handler, NULL);
+		check(err != 0, "pthread_join di sig_handler ha fallito: %s\n", strerror(err));
+	}
+	else
+	{
+		pthread_kill(sig_handler, SIGUSR1);
 	}
 
+	for (size_t i = 0; i < n; i++)
+	{
+		err = pthread_join(th[i], NULL);
+		check(err != 0, "pthread_join ha fallito (Worker n.%ld): %s\n", i, strerror(err));
+	}
+
+	// Gestire error check delle chiamate sottostanti
 	deleteBQueue(th_struct->q, NULL);
-	sem_destroy(&th_struct->sem);
+
+	errno = 0;
+	err = sem_destroy(&th_struct->sem);
+	check(err == -1, "sem_destroy ha fallito: %s\n", strerror(errno));
+
 	close(th_struct->fd_skt);
 	free(th_struct);
 	collector_exit_status(collector_pid);
-	unlink(SOCKNAME);
+	
+	errno = 0;
+	err = unlink(SOCKNAME);
+	check(err == -1, "unlink del socket %s ha fallito: %s\n",SOCKNAME, strerror(errno));
+
 	return 0;
 }
 
@@ -318,32 +420,36 @@ Collector(struct sockaddr_un sa)
 	DBG("Collector is up\n", NULL);
 
 	/*----- SERVER SETUP -----*/
+	int r;
+
+	errno = 0;
 	fd_skt = socket(AF_UNIX, SOCK_STREAM, 0);
-	// Fare check di apertura socket (errno)
+	check(fd_skt == -1, "Creazione socket nel Collector ha fallito: %s", strerror(errno));
 
-	bind(fd_skt, (struct sockaddr *)&sa, sizeof(sa));
-	// Fare check sul bind (errno)
+	errno = 0;
+	r = bind(fd_skt, (struct sockaddr *)&sa, sizeof(sa));
+	check(r == -1, "Bind del socket nel Collector ha fallito: %s", strerror(errno));
 
-	listen(fd_skt, SOMAXCONN);
-	// Fare check sul return del listen (errno)
+	errno = 0;
+	r = listen(fd_skt, SOMAXCONN);
+	check(r == -1, "Listen nel socket del Collector ha fallito: %s", strerror(errno));
 
+	errno = 0;
 	fd_c = accept(fd_skt, NULL, 0);
-	// Fare check sul accept (errno)
+	check(fd_c == -1, "Accetazione del client nel Collector ha fallito: %s", strerror(errno));
 
 	int N = 1024;
 	char buf[N];
-
 	while (1)
 	{
 		errno = 0;
 		int r = read(fd_c, buf, N);
-		check(r == -1, "Funzione read dal socket nel Collector ha fallito:%s", strerror(errno));
+		check(r == -1, "Funzione read dal socket nel Collector ha fallito: %s", strerror(errno));
 		if (r == 0)
 		{
 			break;
 		}
 		printf("%s\n", buf);
-		//fflush(stdout);
 	}
 
 	close(fd_skt);
@@ -383,16 +489,15 @@ static void *Worker(void *arg)
 		P(&th_struct->sem);
 		errno = 0;
 		int r = write(th_struct->fd_skt, res, len);
-		check(r == -1, "Funzione write nel Worker ha fallito:%s", strerror(errno));
+		check(r == -1, "Funzione write nel Worker ha fallito: %s", strerror(errno));
 		V(&th_struct->sem);
-		//printf("%s\n", res);
 
 		munmap(content, f->filesize);
 		free(f->filename);
 		free(f);
 	}
-	// DBG("Chiusura del Worker\n", NULL);
 	push(th_struct->q, EOS);
+	DBG("Chiusura del Worker\n", NULL);
 	pthread_exit(NULL);
 }
 
