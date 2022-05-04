@@ -454,7 +454,6 @@ Collector(struct sockaddr_un sa)
 
 	close(fd_skt);
 	close(fd_c);
-	unlink(sa.sun_path);
 }
 
 static void *Worker(void *arg)
