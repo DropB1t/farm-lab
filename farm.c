@@ -46,6 +46,8 @@
 
 #define UNIX_PATH_MAX 108
 #define SOCKNAME "./sck_y"
+#define SEMNAME_S "/sem_s"
+#define SEMNAME_C "/sem_c"
 
 typedef struct f_struct
 {
@@ -56,7 +58,8 @@ typedef struct f_struct
 typedef struct th_struct
 {
 	int fd_skt;
-	sem_t sem;
+	sem_t *semS;
+	sem_t *semC;
 	BQueue_t *q;
 } th_struct_t;
 
@@ -190,7 +193,7 @@ void mmap_file(const char *file_name, long **contents_ptr, size_t size);
  * @brief	Start routine del thread che gestice i segnali inviati al programma.
  * Si mette in attesa finchè non arrivano alcuni segnali e all'arrivo
  * esegue l' azione prevista
- * 
+ *
  * @param	sigptr set da gestisce
  */
 void *Signal_Handler(void *arg)
@@ -311,6 +314,16 @@ int main(int argc, char *argv[])
 	strncpy(sa.sun_path, SOCKNAME, UNIX_PATH_MAX);
 	sa.sun_family = AF_UNIX;
 
+	sem_t *semS, *semC;
+
+	errno = 0;
+	semS = sem_open(SEMNAME_S, O_CREAT, 0644, 0);
+	check(semS == SEM_FAILED, "sem_open semS ha fallito: %s", strerror(errno));
+
+	errno = 0;
+	semC = sem_open(SEMNAME_C, O_CREAT, 0644, 0);
+	check(semC == SEM_FAILED, "sem_open semC ha fallito: %s", strerror(errno));
+
 	pid_t collector_pid = fork();
 	if (collector_pid == 0)
 	{
@@ -335,10 +348,12 @@ int main(int argc, char *argv[])
 	assert(th_struct);
 
 	th_struct->fd_skt = fd_skt;
+	th_struct->semS = semS;
+	th_struct->semC = semC;
 
-	errno = 0;
+	/* errno = 0;
 	err = sem_init(&th_struct->sem, 1, 1);
-	check(err == -1, "sem_init ha fallito: %s", strerror(errno));
+	check(err == -1, "sem_init ha fallito: %s", strerror(errno)); */
 
 	errno = 0;
 	BQueue_t *q = initBQueue(q_len);
@@ -395,17 +410,24 @@ int main(int argc, char *argv[])
 
 	deleteBQueue(th_struct->q, NULL);
 
-	errno = 0;
+	/* errno = 0;
 	err = sem_destroy(&th_struct->sem);
-	check(err == -1, "sem_destroy ha fallito: %s\n", strerror(errno));
+	check(err == -1, "sem_destroy ha fallito: %s\n", strerror(errno)); */
 
 	close(th_struct->fd_skt);
 	free(th_struct);
+	V(semC);
 	collector_exit_status(collector_pid);
 
 	errno = 0;
 	err = unlink(SOCKNAME);
 	check(err == -1, "unlink del socket %s ha fallito: %s\n", SOCKNAME, strerror(errno));
+
+	sem_close(semS);
+	sem_unlink(SEMNAME_S);
+
+	sem_close(semC);
+	sem_unlink(SEMNAME_C);
 
 	return 0;
 }
@@ -416,6 +438,9 @@ Collector(struct sockaddr_un sa)
 {
 	int fd_skt, fd_c;
 	DBG("Collector is up\n", NULL);
+
+	sem_t *semS = sem_open(SEMNAME_S, 0);
+	sem_t *semC = sem_open(SEMNAME_C, 0);
 
 	/*----- SERVER SETUP -----*/
 	int r;
@@ -438,8 +463,10 @@ Collector(struct sockaddr_un sa)
 
 	int N = 1024;
 	char buf[N];
+	V(semS);
 	while (1)
 	{
+		P(semC);
 		errno = 0;
 		r = read(fd_c, buf, N);
 		check(r == -1, "Funzione read dal socket nel Collector ha fallito: %s", strerror(errno));
@@ -448,8 +475,9 @@ Collector(struct sockaddr_un sa)
 			break;
 		}
 		errno = 0;
-		r = write(STDOUT_FILENO,buf,strlen(buf));
+		r = write(STDOUT_FILENO, buf, strlen(buf));
 		check(r == -1, "Funzione write nel Collector ha fallito: %s", strerror(errno));
+		V(semS);
 	}
 
 	close(fd_skt);
@@ -486,11 +514,11 @@ static void *Worker(void *arg)
 		char res[len];
 		snprintf(res, len, "%ld %s\n", result, f->filename);
 
-		//P(&th_struct->sem);
+		P(th_struct->semS);
 		errno = 0;
 		int r = write(th_struct->fd_skt, res, len);
 		check(r == -1, "Funzione write nel Worker ha fallito: %s", strerror(errno));
-		//V(&th_struct->sem);
+		V(th_struct->semC);
 
 		munmap(content, f->filesize);
 		free(f->filename);
