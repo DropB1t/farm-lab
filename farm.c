@@ -187,12 +187,11 @@ void mmap_file(const char *file_name, long **contents_ptr, size_t size);
 
 /*----- GESTORE DEI SEGNALI -----*/
 /**
- * @function signal_handler
- * @brief    gestisce i segnali ricevuti dal server, usata dal thread
- *           gestore dei segnali
- *
- * Si mette in attesa finchè non arrivano alcuni segnali e all' arrivo
+ * @brief	Start routine del thread che gestice i segnali inviati al programma.
+ * Si mette in attesa finchè non arrivano alcuni segnali e all'arrivo
  * esegue l' azione prevista
+ * 
+ * @param	sigptr set da gestisce
  */
 void *Signal_Handler(void *arg)
 {
@@ -394,7 +393,6 @@ int main(int argc, char *argv[])
 		check(err != 0, "pthread_join ha fallito (Worker n.%ld): %s\n", i, strerror(err));
 	}
 
-	// Gestire error check delle chiamate sottostanti
 	deleteBQueue(th_struct->q, NULL);
 
 	errno = 0;
@@ -404,10 +402,10 @@ int main(int argc, char *argv[])
 	close(th_struct->fd_skt);
 	free(th_struct);
 	collector_exit_status(collector_pid);
-	
+
 	errno = 0;
 	err = unlink(SOCKNAME);
-	check(err == -1, "unlink del socket %s ha fallito: %s\n",SOCKNAME, strerror(errno));
+	check(err == -1, "unlink del socket %s ha fallito: %s\n", SOCKNAME, strerror(errno));
 
 	return 0;
 }
@@ -443,17 +441,20 @@ Collector(struct sockaddr_un sa)
 	while (1)
 	{
 		errno = 0;
-		int r = read(fd_c, buf, N);
+		r = read(fd_c, buf, N);
 		check(r == -1, "Funzione read dal socket nel Collector ha fallito: %s", strerror(errno));
 		if (r == 0)
 		{
 			break;
 		}
-		printf("%s\n", buf);
+		errno = 0;
+		r = write(STDOUT_FILENO,buf,strlen(buf));
+		check(r == -1, "Funzione write nel Collector ha fallito: %s", strerror(errno));
 	}
 
 	close(fd_skt);
 	close(fd_c);
+	exit(EXIT_SUCCESS);
 }
 
 static void *Worker(void *arg)
@@ -481,15 +482,15 @@ static void *Worker(void *arg)
 			result += (i * content[i]);
 		}
 
-		int len = (snprintf(NULL, 0, "%ld %s", result, f->filename)) + 1;
+		int len = (snprintf(NULL, 0, "%ld %s\n", result, f->filename)) + 1;
 		char res[len];
-		snprintf(res, len, "%ld %s", result, f->filename);
+		snprintf(res, len, "%ld %s\n", result, f->filename);
 
-		P(&th_struct->sem);
+		//P(&th_struct->sem);
 		errno = 0;
 		int r = write(th_struct->fd_skt, res, len);
 		check(r == -1, "Funzione write nel Worker ha fallito: %s", strerror(errno));
-		V(&th_struct->sem);
+		//V(&th_struct->sem);
 
 		munmap(content, f->filesize);
 		free(f->filename);
