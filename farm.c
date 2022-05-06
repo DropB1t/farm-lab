@@ -80,7 +80,7 @@ format_cmd(const char *progname)
 	fprintf(stderr, "-n\n    numero di thread (default 4)\n");
 	fprintf(stderr, "-q\n    lunghezza delal coda concorrente (default 8)\n");
 	fprintf(stderr, "-t\n    tempo in ms tra l'invio delle richieste ai thread Worker (default 0)\n");
-	fflush(stdout);
+	fflush(stderr);
 }
 
 /**
@@ -165,19 +165,6 @@ collector_exit_status(pid_t pid)
  * @brief	Start routine dei thread Worker
  */
 static void *Worker(void *arg);
-
-/**
- * @brief	Routine per liberare la memoria di elementi f_struct
- */
-void F(void *el)
-{
-	if (el != EOS)
-	{
-		f_struct_t *f = el;
-		free(f->filename);
-		free(f);
-	}
-}
 
 /**
  * @brief	Mappa un file di interi long
