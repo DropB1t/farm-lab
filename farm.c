@@ -212,7 +212,7 @@ void *Signal_Handler(void *arg)
 		{
 			errno = n;
 			perror("nella sigwait");
-			exit(EXIT_FAILURE);
+			_exit(EXIT_FAILURE);
 		}
 
 		if ((signal == SIGINT) || (signal == SIGQUIT) || (signal == SIGTERM) || (signal == SIGHUP))
@@ -226,7 +226,7 @@ void *Signal_Handler(void *arg)
 		}
 	}
 
-	pthread_exit(NULL);
+	return NULL;
 }
 
 /*----- MAIN -----*/
@@ -351,10 +351,6 @@ int main(int argc, char *argv[])
 	th_struct->semS = semS;
 	th_struct->semC = semC;
 
-	/* errno = 0;
-	err = sem_init(&th_struct->sem, 1, 1);
-	check(err == -1, "sem_init ha fallito: %s", strerror(errno)); */
-
 	errno = 0;
 	BQueue_t *q = initBQueue(q_len);
 	check(q == NULL, "initBQueue ha fallito: %s", strerror(errno));
@@ -400,6 +396,8 @@ int main(int argc, char *argv[])
 	else
 	{
 		pthread_kill(sig_handler, SIGUSR1);
+		err = pthread_join(sig_handler, NULL);
+		check(err != 0, "pthread_join di sig_handler ha fallito: %s\n", strerror(err));
 	}
 
 	for (size_t i = 0; i < n; i++)
@@ -409,25 +407,31 @@ int main(int argc, char *argv[])
 	}
 
 	deleteBQueue(th_struct->q, NULL);
-
-	/* errno = 0;
-	err = sem_destroy(&th_struct->sem);
-	check(err == -1, "sem_destroy ha fallito: %s\n", strerror(errno)); */
-
-	close(th_struct->fd_skt);
 	free(th_struct);
+
+	close(fd_skt);
 	V(semC);
 	collector_exit_status(collector_pid);
 
 	errno = 0;
+	err = sem_close(semS);
+	check(err == -1, "sem_close nel main ha fallito: %s", strerror(errno));
+
+	errno = 0;
+	err = sem_close(semC);
+	check(err == -1, "sem_close nel main ha fallito: %s", strerror(errno));
+
+	errno = 0;
+	err = sem_unlink(SEMNAME_S);
+	check(err == -1, "sem_unlink nel main ha fallito: %s", strerror(errno));
+
+	errno = 0;
+	err = sem_unlink(SEMNAME_C);
+	check(err == -1, "sem_unlink nel main ha fallito: %s", strerror(errno));
+
+	errno = 0;
 	err = unlink(SOCKNAME);
 	check(err == -1, "unlink del socket %s ha fallito: %s\n", SOCKNAME, strerror(errno));
-
-	sem_close(semS);
-	sem_unlink(SEMNAME_S);
-
-	sem_close(semC);
-	sem_unlink(SEMNAME_C);
 
 	return 0;
 }
@@ -479,10 +483,16 @@ Collector(struct sockaddr_un sa)
 		check(r == -1, "Funzione write nel Collector ha fallito: %s", strerror(errno));
 		V(semS);
 	}
-
 	close(fd_skt);
 	close(fd_c);
-	exit(EXIT_SUCCESS);
+
+	errno = 0;
+	r = sem_close(semC);
+	check(r == -1, "sem_close nel collector ha fallito: %s", strerror(errno));
+
+	errno = 0;
+	r = sem_close(semS);
+	check(r == -1, "sem_close nel collector ha fallito: %s", strerror(errno));
 }
 
 static void *Worker(void *arg)
@@ -526,7 +536,7 @@ static void *Worker(void *arg)
 	}
 	push(th_struct->q, EOS);
 	DBG("Chiusura del Worker\n", NULL);
-	pthread_exit(NULL);
+	return NULL;
 }
 
 void mmap_file(const char *file_name, long **content_ptr, size_t size)
