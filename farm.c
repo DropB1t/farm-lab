@@ -46,8 +46,13 @@
 
 #define UNIX_PATH_MAX 108
 #define SOCKNAME "./sck_y"
-#define SEMNAME_S "/sem_s"
-#define SEMNAME_C "/sem_c"
+#define SHMNAME "/shmem-prodcons"
+
+typedef struct shmsegment
+{
+	sem_t semS;
+	sem_t semC;
+} shmsegment_t;
 
 typedef struct f_struct
 {
@@ -133,7 +138,7 @@ check(int test, const char *message, ...)
  *
  * @param	sa indirizzo della connessione socket AF_UNIX
  */
-static void Collector(struct sockaddr_un sa);
+static void Collector(struct sockaddr_un sa, shmsegment_t *shmptr);
 
 /**
  * @brief	Aspetta la terminazione del processo collector e stampa lo status con cui termina il processo
@@ -272,6 +277,7 @@ int main(int argc, char *argv[])
 	errno = 0;
 	err = sigemptyset(&set);
 	check(err == -1, "Funzione sigemptyset ha fallito: %s", strerror(errno));
+	
 	errno = 0;
 	err = sigaddset(&set, SIGINT);
 	check(err == -1, "Funzione sigaddset ha fallito: %s", strerror(errno));
@@ -301,20 +307,21 @@ int main(int argc, char *argv[])
 	strncpy(sa.sun_path, SOCKNAME, UNIX_PATH_MAX);
 	sa.sun_family = AF_UNIX;
 
-	sem_t *semS, *semC;
+	errno = 0;
+	shmsegment_t *shmptr = mmap(0, sizeof(shmsegment_t), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+	check(shmptr == MAP_FAILED,"shmsegment_t mmap ha fallito: %s",strerror(errno));
 
 	errno = 0;
-	semS = sem_open(SEMNAME_S, O_CREAT, 0644, 0);
-	check(semS == SEM_FAILED, "sem_open semS ha fallito: %s", strerror(errno));
-
+	err = sem_init(&shmptr->semS, 1, 0);
+	check(err == -1,"sem_init ha fallito: %s",strerror(errno));
 	errno = 0;
-	semC = sem_open(SEMNAME_C, O_CREAT, 0644, 0);
-	check(semC == SEM_FAILED, "sem_open semC ha fallito: %s", strerror(errno));
+	err = sem_init(&shmptr->semC, 1, 0);
+	check(err == -1,"sem_init ha fallito: %s",strerror(errno));
 
 	pid_t collector_pid = fork();
 	if (collector_pid == 0)
 	{
-		Collector(sa);
+		Collector(sa,shmptr);
 		exit(EXIT_SUCCESS);
 	}
 
@@ -335,8 +342,8 @@ int main(int argc, char *argv[])
 	assert(th_struct);
 
 	th_struct->fd_skt = fd_skt;
-	th_struct->semS = semS;
-	th_struct->semC = semC;
+	th_struct->semS = &shmptr->semS;
+	th_struct->semC = &shmptr->semC;
 
 	errno = 0;
 	BQueue_t *q = initBQueue(q_len);
@@ -397,24 +404,12 @@ int main(int argc, char *argv[])
 	free(th_struct);
 
 	close(fd_skt);
-	V(semC);
+	V(&shmptr->semC);
 	collector_exit_status(collector_pid);
 
 	errno = 0;
-	err = sem_close(semS);
-	check(err == -1, "sem_close nel main ha fallito: %s", strerror(errno));
-
-	errno = 0;
-	err = sem_close(semC);
-	check(err == -1, "sem_close nel main ha fallito: %s", strerror(errno));
-
-	errno = 0;
-	err = sem_unlink(SEMNAME_S);
-	check(err == -1, "sem_unlink nel main ha fallito: %s", strerror(errno));
-
-	errno = 0;
-	err = sem_unlink(SEMNAME_C);
-	check(err == -1, "sem_unlink nel main ha fallito: %s", strerror(errno));
+	err = munmap(shmptr,sizeof(shmsegment_t));
+	check(err == -1, "munmap di shmptr ha fallito: %s\n", strerror(errno));
 
 	errno = 0;
 	err = unlink(SOCKNAME);
@@ -425,13 +420,10 @@ int main(int argc, char *argv[])
 
 /*----- COLLECTOR -----*/
 static void
-Collector(struct sockaddr_un sa)
+Collector(struct sockaddr_un sa, shmsegment_t *shmptr)
 {
 	int fd_skt, fd_c;
 	DBG("Collector is up\n", NULL);
-
-	sem_t *semS = sem_open(SEMNAME_S, 0);
-	sem_t *semC = sem_open(SEMNAME_C, 0);
 
 	/*----- SERVER SETUP -----*/
 	int r;
@@ -454,10 +446,10 @@ Collector(struct sockaddr_un sa)
 
 	int N = 1024;
 	char buf[N];
-	V(semS);
+	V(&shmptr->semS);
 	while (1)
 	{
-		P(semC);
+		P(&shmptr->semC);
 		errno = 0;
 		r = read(fd_c, buf, N);
 		check(r == -1, "Funzione read dal socket nel Collector ha fallito: %s", strerror(errno));
@@ -468,18 +460,10 @@ Collector(struct sockaddr_un sa)
 		errno = 0;
 		r = write(STDOUT_FILENO, buf, strlen(buf));
 		check(r == -1, "Funzione write nel Collector ha fallito: %s", strerror(errno));
-		V(semS);
+		V(&shmptr->semS);
 	}
 	close(fd_skt);
 	close(fd_c);
-
-	errno = 0;
-	r = sem_close(semC);
-	check(r == -1, "sem_close nel collector ha fallito: %s", strerror(errno));
-
-	errno = 0;
-	r = sem_close(semS);
-	check(r == -1, "sem_close nel collector ha fallito: %s", strerror(errno));
 }
 
 static void *Worker(void *arg)
@@ -529,6 +513,7 @@ static void *Worker(void *arg)
 void mmap_file(const char *file_name, long **content_ptr, size_t size)
 {
 	int fd;
+	errno = 0;
 	fd = open(file_name, O_RDONLY);
 	check(fd < 0, "Funzione open %s ha fallito: %s", file_name, strerror(errno));
 	*content_ptr = mmap(0, size, PROT_READ, MAP_PRIVATE, fd, 0);
