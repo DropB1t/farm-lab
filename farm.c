@@ -230,6 +230,8 @@ int main(int argc, char *argv[])
 		return 0;
 	}
 
+	/*----- ARGUMENTS SETUP -----*/
+
 	long n = N_THREADS;
 	long q_len = Q_LEN;
 	long delay = DELAY;
@@ -336,7 +338,7 @@ int main(int argc, char *argv[])
 			exit(EXIT_FAILURE);
 	}
 
-	/*----- MASTER WORKER -----*/
+	/*----- MASTER ROUTINE -----*/
 
 	th_struct_t *th_struct = malloc(sizeof(th_struct_t));
 	assert(th_struct);
@@ -381,6 +383,8 @@ int main(int argc, char *argv[])
 		push(q, file);
 	}
 	push(q, EOS);
+
+	/*----- TERMINATION ROUTINE -----*/
 
 	if (sig_term == 1)
 	{
@@ -444,6 +448,8 @@ Collector(struct sockaddr_un sa, shmsegment_t *shmptr)
 	fd_c = accept(fd_skt, NULL, 0);
 	check(fd_c == -1, "Accetazione del client nel Collector ha fallito: %s", strerror(errno));
 
+	/*----- COLLECTOR ROUTINE -----*/
+
 	int N = 1024;
 	char buf[N];
 	V(&shmptr->semS);
@@ -480,7 +486,7 @@ static void *Worker(void *arg)
 		}
 		DBG("File ricevuto: %s con dimensione di %ld bytes\n", f->filename, f->filesize);
 
-		/*----- Calcolo di result -----*/
+		/*----- RESULT COMPUTATION -----*/
 
 		long *content = NULL;
 		mmap_file(f->filename, &content, f->filesize);
