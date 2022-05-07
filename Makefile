@@ -21,7 +21,8 @@ TARNAME = YuriyRymarchuk-614484
 
 FILES_TO_ARCHIVE =	Makefile farm.c generafile.c test.sh \
 					boundedqueue.c \
-					util.h boundedqueue.h
+					util.h boundedqueue.h \
+					RelazioneProgetto.pdf
 
 TARGETS			= farm
 
@@ -54,6 +55,7 @@ libfarm.a: $(OBJECTS)
 
 generafile: generafile.o
 	$(CC) $(CFLAGS) $(INCLUDES) $(OPTFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS)
+	@make cleanobj
 
 clean		:
 	@rm -f $(TARGETS)
