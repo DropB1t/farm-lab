@@ -1,6 +1,6 @@
 # Progetto del corso di Laboratorio II 2021/22
 ###### Yuriy Rymarchuk ~ Dipartimento di Informatica Università di Pisa
-[[06-05-2022]]
+###### 07-05-2022
 
 ### Panoramica
 Il lavoro del thread **Master** è stato implementato dentro al thread main del programma, che rispettivamente:
