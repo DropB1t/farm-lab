@@ -1,6 +1,5 @@
 # Progetto del corso di Laboratorio II 2021/22
 ###### Yuriy Rymarchuk ~ Dipartimento di Informatica Università di Pisa
-###### 07-05-2022
 
 ### Panoramica
 Il lavoro del thread **Master** è stato implementato dentro al thread main del programma, che rispettivamente:
@@ -37,7 +36,9 @@ I rispettivi segnali `SIGHUP, SIGINT, SIGQUIT, SIGTERM` vengono aggiunti alla ma
 
 ### Thread Worker
 Gli worker avviano un ciclo while del fetch dei `f_struct` dalla coda, controllando che non sia il messaggio di terminazione dello stream chiamato `EOS`, nel caso positivo esce dal while, rimette nella coda il messaggio `EOS` e termina la sua routine. Nel caso invece in cui l'elemento ricevuto è un effettivo file da processare, il Worker usa la funzione:
-	-> `mmap_file(const char *file_name, long **content_ptr, size_t size);`
+
+- `mmap_file(const char *file_name, long **content_ptr, size_t size);`
+
 che salva nel puntatore `long *content` il file mappato in memoria trattandolo come un effettivo array di interi long per poi calcolare il resultato finale e creare la stringa di stampa da inviare al processo **Collector** tramite la socket. L'accesso alla scrittura sul socket viene sincronizzato attraverso due semafori, usando l'unica connessione client aperta, dal main, sul descrittore `th_struct->fd_skt`. Al termine del l'invio del messaggio il thread libera le strutture utilizzate per contenere i dati del file e fa `munmap()` della porzione di memoria dove era contenuto array di interi long.
 
 ### Collector
@@ -48,6 +49,9 @@ Al processo **Collector**  viene passato `struct sockaddr_un sa` che rappresenta
 
 ### Semafori e Memoria
 La scelta di sincronizzare la scrittura sul socket utilizzando i semafori è venuta con l'idea di scrivere un programma che utilizzasse pochissimi byte allocati per creare, gestire e organizzare la connessione socket senza limitare il parallelismo dell'esecuzione del programma. Infatti lanciando il comando per visualizzare il riepilogo sull'uso del heap :
-	-> `valgrind -s --leak-check=full --show-leak-kinds=all ./farm -n 8 -q 16 file*`
-![[ValgrindTest.jpg]]
+
+- `valgrind -s --leak-check=full --show-leak-kinds=all ./farm -n 8 -q 16 file*`
+
+![ValgrindTest](https://user-images.githubusercontent.com/45283261/209654272-1e3a286f-940f-46e2-9124-a63be02b6f8d.jpg)
+
  possiamo notare che, anche con con 8 thread, vengono utilizzati  3600 bytes di memoria, neanche 4K di byte. Se avessimo dovuto creare una connessione socket per ogni thread sicuramente ci sarebbe costato di più in termini di uso della memoria.
